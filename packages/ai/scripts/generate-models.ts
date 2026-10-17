@@ -915,15 +915,24 @@ async function generateModels() {
 		});
 	}
 
-	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
+	// Keep the current MiniMax text model available until models.dev publishes it.
+	for (const [provider, baseUrl] of [["minimax", "https://api.minimax.io/anthropic"], ["minimax-cn", "https://api.minimaxi.com/anthropic"]] as const) {
+		if (!allModels.some((m) => m.provider === provider && m.id === "MiniMax-M3")) {
+			allModels.push({ id: "MiniMax-M3", name: "MiniMax-M3", api: "anthropic-messages", provider, baseUrl, reasoning: true, input: ["text", "image"], cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 128000 });
+		}
+	}
+
+	const minimaxDirectSupportedIds = new Set(["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
 
 	for (const candidate of allModels) {
 		if (
 			(candidate.provider === "minimax" || candidate.provider === "minimax-cn") &&
 			minimaxDirectSupportedIds.has(candidate.id)
 		) {
-			candidate.contextWindow = 204800;
-			candidate.maxTokens = 131072;
+			if (candidate.id !== "MiniMax-M3") {
+				candidate.contextWindow = 204800;
+				candidate.maxTokens = 131072;
+			}
 		}
 	}
 
