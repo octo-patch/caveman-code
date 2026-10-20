@@ -40,6 +40,7 @@ const context: Context = {
 describe("MiniMax HTTP contract", () => {
 	let server: Server;
 	let baseUrl: string;
+	let openaiToolReply = false;
 	const requests: CapturedRequest[] = [];
 
 	beforeAll(async () => {
@@ -50,6 +51,25 @@ describe("MiniMax HTTP contract", () => {
 			requests.push({ url: req.url!, apiKey: req.headers["x-api-key"] as string | undefined, body });
 			res.writeHead(200, { "content-type": "text/event-stream" });
 			if (req.url?.endsWith("/chat/completions")) {
+				if (openaiToolReply) {
+					const choice = {
+						index: 0,
+						delta: {
+							reasoning_content: "Use lookup.",
+							tool_calls: [
+								{
+									index: 0,
+									id: "call_1",
+									type: "function",
+									function: { name: "lookup", arguments: '{"value":"ok"}' },
+								},
+							],
+						},
+						finish_reason: "tool_calls",
+					};
+					res.end(`data: ${JSON.stringify({ id: "reply", choices: [choice] })}\n\ndata: [DONE]\n\n`);
+					return;
+				}
 				res.end(
 					`data: ${JSON.stringify({ id: "reply", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
 				);
@@ -174,6 +194,48 @@ describe("MiniMax HTTP contract", () => {
 			expect(requests.at(-1)!.body.output_config).toBeUndefined();
 		}
 	});
+
+	for (const configured of [
+		getModel("openrouter", "minimax/minimax-m3.1-flash:free"),
+		getModel("opencode", "minimax-m3.1-flash-free"),
+		getModel("opencode-go", "minimax-m3.1-flash-free"),
+	]) {
+		it(`${configured.provider} replays reasoning and tool calls through the SDK`, async () => {
+			const model = { ...configured, baseUrl: `${baseUrl}/v1` };
+			openaiToolReply = true;
+			try {
+				const first = await streamSimpleOpenAICompletions(model, context, { apiKey: "fixture-key" }).result();
+				expect(first.stopReason, first.errorMessage).toBe("toolUse");
+				const next: Context = {
+					...context,
+					messages: [
+						...context.messages,
+						first,
+						{
+							role: "toolResult",
+							toolCallId: "call_1",
+							toolName: "lookup",
+							content: [{ type: "text", text: "ok" }],
+							isError: false,
+							timestamp: 1,
+						},
+					],
+				};
+				const result = await streamSimpleOpenAICompletions(model, next, { apiKey: "fixture-key" }).result();
+				expect(result.stopReason, result.errorMessage).toBe("toolUse");
+				expect(requests.at(-1)!.body.messages[1]).toMatchObject({
+					role: "assistant",
+					reasoning_content: "Use lookup.",
+					tool_calls: [
+						{ id: "call_1", type: "function", function: { name: "lookup", arguments: '{"value":"ok"}' } },
+					],
+				});
+				expect(requests.at(-1)!.body.messages[2]).toMatchObject({ role: "tool", tool_call_id: "call_1" });
+			} finally {
+				openaiToolReply = false;
+			}
+		});
+	}
 
 	for (const provider of ["opencode", "opencode-go"] as const) {
 		for (const reasoning of [undefined, "minimal", "low", "medium", "high", "xhigh"] as const) {
